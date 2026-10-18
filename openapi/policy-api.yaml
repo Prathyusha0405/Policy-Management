@@ -1,0 +1,524 @@
+openapi: 3.0.3
+info:
+  title: CHUBB APAC Policy Management API
+  description: |
+    Contract for managing and searching insurance policies.
+    This document is the source of truth; endpoints must not be implemented
+    without being described here first.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: Policies
+    description: Policy search, retrieval, review flagging and portfolio summary
+
+paths:
+  /api/v1/policies:
+    get:
+      tags: [Policies]
+      operationId: searchPolicies
+      summary: Search policies
+      description: |
+        Returns a page of policies. Supports filtering, free-text search,
+        sorting and pagination.
+
+        Free-text `search` matches (case-insensitive, partial) across
+        `policyNumber`, `policyholderName` and `underwriter`.
+
+        Allowed `sort` fields: `policyNumber`, `policyholderName`,
+        `lineOfBusiness`, `status`, `premiumAmount`, `effectiveDate`,
+        `expiryDate`, `region`, `underwriter`, `createdAt`, `updatedAt`.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: search
+          in: query
+          description: Free-text search over policyNumber, policyholderName and underwriter.
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+          example: Tanaka
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/PolicyStatus'
+        - name: lineOfBusiness
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/LineOfBusiness'
+        - name: region
+          in: query
+          description: APAC region (exact match, case-insensitive).
+          required: false
+          schema:
+            type: string
+            enum: [Australia, China, Hong Kong, India, Indonesia, Japan, Malaysia, New Zealand, Philippines, Singapore, South Korea, Taiwan, Thailand, Vietnam]
+          example: Singapore
+        - name: effectiveDateFrom
+          in: query
+          description: Inclusive lower bound on effectiveDate. Must be on or before effectiveDateTo.
+          required: false
+          schema:
+            type: string
+            format: date
+          example: '2025-01-01'
+        - name: effectiveDateTo
+          in: query
+          description: Inclusive upper bound on effectiveDate.
+          required: false
+          schema:
+            type: string
+            format: date
+          example: '2025-12-31'
+      responses:
+        '200':
+          description: Page of matching policies.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyPage'
+              example:
+                content:
+                  - id: 3f2b8c1e-5a47-4d1e-9f3a-2c6b7d8e9a10
+                    policyNumber: POL-SG-000123
+                    policyholderName: Wei Ling Tan
+                    lineOfBusiness: HEALTH
+                    status: ACTIVE
+                    premiumAmount: 2450.75
+                    currency: SGD
+                    effectiveDate: '2025-03-01'
+                    expiryDate: '2026-02-28'
+                    region: Singapore
+                    underwriter: Priya Nair
+                    flaggedForReview: false
+                    createdAt: '2025-02-20T09:15:00'
+                    updatedAt: '2025-02-20T09:15:00'
+                page: 0
+                size: 20
+                totalElements: 1
+                totalPages: 1
+                sort: effectiveDate,desc
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/policies/{id}:
+    get:
+      tags: [Policies]
+      operationId: getPolicyById
+      summary: Get a policy by id
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Policy identifier.
+          schema:
+            type: string
+            format: uuid
+          example: 3f2b8c1e-5a47-4d1e-9f3a-2c6b7d8e9a10
+      responses:
+        '200':
+          description: The policy.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/policies/flag:
+    patch:
+      tags: [Policies]
+      operationId: flagPolicy
+      summary: Flag or unflag a policy for review
+      description: |
+        Sets the `flaggedForReview` value of a policy and returns the updated
+        policy. Evicts the cached policy summary.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlagPolicyRequest'
+            example:
+              policyId: 3f2b8c1e-5a47-4d1e-9f3a-2c6b7d8e9a10
+              flaggedForReview: true
+      responses:
+        '200':
+          description: The updated policy.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/policies/summary:
+    get:
+      tags: [Policies]
+      operationId: getPolicySummary
+      summary: Get portfolio summary
+      description: |
+        Returns aggregate figures across all policies. The response is cached
+        and evicted whenever a policy is flagged.
+
+        Premium is grouped per line of business **and currency** because
+        policies are held in mixed currencies and must not be summed together.
+      responses:
+        '200':
+          description: Portfolio summary.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicySummary'
+              example:
+                totalPolicies: 260
+                countByStatus:
+                  ACTIVE: 150
+                  PENDING: 30
+                  EXPIRED: 45
+                  CANCELLED: 20
+                  SUSPENDED: 15
+                premiumByLineOfBusiness:
+                  - lineOfBusiness: HEALTH
+                    currency: SGD
+                    totalPremium: 125430.50
+                  - lineOfBusiness: MOTOR
+                    currency: AUD
+                    totalPremium: 98210.00
+                expiringSoonCount: 18
+                expiringSoonDays: 30
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: Zero-based page index.
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    Size:
+      name: size
+      in: query
+      description: Page size.
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Sort:
+      name: sort
+      in: query
+      description: Sort expression in the form `field,direction` (direction is `asc` or `desc`).
+      required: false
+      schema:
+        type: string
+        enum:
+          - policyNumber,asc
+          - policyNumber,desc
+          - policyholderName,asc
+          - policyholderName,desc
+          - lineOfBusiness,asc
+          - lineOfBusiness,desc
+          - status,asc
+          - status,desc
+          - premiumAmount,asc
+          - premiumAmount,desc
+          - effectiveDate,asc
+          - effectiveDate,desc
+          - expiryDate,asc
+          - expiryDate,desc
+          - region,asc
+          - region,desc
+          - underwriter,asc
+          - underwriter,desc
+          - createdAt,asc
+          - createdAt,desc
+          - updatedAt,asc
+          - updatedAt,desc
+        default: effectiveDate,desc
+      example: premiumAmount,desc
+
+  headers:
+    XRequestId:
+      description: Correlation id for the request, echoed from the client or generated by the server.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Invalid query parameter, path variable or request body.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Bad Request
+            status: 400
+            detail: Validation failed
+            instance: /api/v1/policies
+            timestamp: '2025-06-01T10:15:30'
+            requestId: 9d0a6f52-7c1b-4c0e-8a55-1f3e2b4a6c77
+            errors:
+              - field: size
+                message: must be less than or equal to 100
+    NotFound:
+      description: Policy not found.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Policy Not Found
+            status: 404
+            detail: Policy with id 3f2b8c1e-5a47-4d1e-9f3a-2c6b7d8e9a10 was not found
+            instance: /api/v1/policies/3f2b8c1e-5a47-4d1e-9f3a-2c6b7d8e9a10
+            timestamp: '2025-06-01T10:15:30'
+            requestId: 9d0a6f52-7c1b-4c0e-8a55-1f3e2b4a6c77
+    InternalServerError:
+      description: Unexpected server error.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+          example:
+            type: about:blank
+            title: Internal Server Error
+            status: 500
+            detail: An unexpected error occurred
+            instance: /api/v1/policies/summary
+            timestamp: '2025-06-01T10:15:30'
+            requestId: 9d0a6f52-7c1b-4c0e-8a55-1f3e2b4a6c77
+
+  schemas:
+    PolicyStatus:
+      type: string
+      enum: [ACTIVE, PENDING, EXPIRED, CANCELLED, SUSPENDED]
+
+    LineOfBusiness:
+      type: string
+      enum: [PROPERTY, MOTOR, HEALTH, LIFE, TRAVEL, MARINE, LIABILITY, ACCIDENT]
+
+    Policy:
+      type: object
+      required:
+        - id
+        - policyNumber
+        - policyholderName
+        - lineOfBusiness
+        - status
+        - premiumAmount
+        - currency
+        - effectiveDate
+        - expiryDate
+        - region
+        - underwriter
+        - flaggedForReview
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        policyNumber:
+          type: string
+          example: POL-SG-000123
+        policyholderName:
+          type: string
+          example: Wei Ling Tan
+        lineOfBusiness:
+          $ref: '#/components/schemas/LineOfBusiness'
+        status:
+          $ref: '#/components/schemas/PolicyStatus'
+        premiumAmount:
+          type: number
+          format: decimal
+          minimum: 0
+          example: 2450.75
+        currency:
+          type: string
+          description: ISO 4217 currency code.
+          pattern: '^[A-Z]{3}$'
+          example: SGD
+        effectiveDate:
+          type: string
+          format: date
+        expiryDate:
+          type: string
+          format: date
+        region:
+          type: string
+          example: Singapore
+        underwriter:
+          type: string
+          example: Priya Nair
+        flaggedForReview:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PolicyPage:
+      type: object
+      required: [content, page, size, totalElements, totalPages, sort]
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/Policy'
+        page:
+          type: integer
+          minimum: 0
+        size:
+          type: integer
+          minimum: 1
+        totalElements:
+          type: integer
+          format: int64
+          minimum: 0
+        totalPages:
+          type: integer
+          minimum: 0
+        sort:
+          type: string
+          example: effectiveDate,desc
+
+    FlagPolicyRequest:
+      type: object
+      required: [policyId, flaggedForReview]
+      properties:
+        policyId:
+          type: string
+          format: uuid
+        flaggedForReview:
+          type: boolean
+
+    PremiumByLineOfBusiness:
+      type: object
+      required: [lineOfBusiness, currency, totalPremium]
+      properties:
+        lineOfBusiness:
+          $ref: '#/components/schemas/LineOfBusiness'
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        totalPremium:
+          type: number
+          format: decimal
+          minimum: 0
+
+    PolicySummary:
+      type: object
+      required:
+        - totalPolicies
+        - countByStatus
+        - premiumByLineOfBusiness
+        - expiringSoonCount
+        - expiringSoonDays
+      properties:
+        totalPolicies:
+          type: integer
+          format: int64
+          minimum: 0
+        countByStatus:
+          type: object
+          description: Policy count keyed by PolicyStatus.
+          additionalProperties:
+            type: integer
+            format: int64
+            minimum: 0
+        premiumByLineOfBusiness:
+          type: array
+          items:
+            $ref: '#/components/schemas/PremiumByLineOfBusiness'
+        expiringSoonCount:
+          type: integer
+          format: int64
+          minimum: 0
+        expiringSoonDays:
+          type: integer
+          description: Window, in days from today, used to count expiring policies.
+          default: 30
+
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+
+    ProblemDetail:
+      type: object
+      description: RFC 7807 problem details.
+      required: [title, status, detail, timestamp, requestId]
+      properties:
+        type:
+          type: string
+          default: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+        errors:
+          type: array
+          description: Present for validation failures.
+          items:
+            $ref: '#/components/schemas/FieldError'
